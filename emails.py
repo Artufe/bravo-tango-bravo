@@ -3,32 +3,50 @@ import dns.resolver
 from urllib.parse import urlparse
 from api_interfaces import DebounceAPI
 
-def email_combinations(first_name, last_name):
+
+def email_combinations(first, last):
     """Generate a list of combinations to try"""
 
     combinations = []
-    if not first_name:
+    if not first:
         return []
 
-    first_initial = first_name[0]
-    if not last_name:
-        combinations.extend([first_name, first_initial, first_name[:2], first_name[:3]])
+    # First name first letter
+    f = first[0]
+    if not last:
+        combinations.extend([f"{first}",
+                            f"{f}"])
     else:
-        last_initial = last_name[0]
-        combinations.extend([first_name,last_name,first_initial,last_initial,f"{last_initial}{first_initial}",f"{first_initial}{last_initial}",f"{first_name}{last_name}",f"{first_name}.{last_name}", f"{first_initial}{last_name}", f"{first_initial}.{last_name}", f"{first_name}{last_initial}", f"{first_name}.{last_initial}", f"{first_initial}{last_initial}", f"{first_initial}.{last_initial}", f"{last_name}{first_name}", f"{last_name}.{first_name}", f"{last_name}{first_initial}", f"{last_name}.{first_initial}", f"{last_initial}{first_name}", f"{last_initial}.{first_name}", f"{last_initial}{first_initial}", f"{last_initial}.{first_initial}", f"{first_name}-{last_name}", f"{first_initial}-{last_name}", f"{first_name}-{last_initial}", f"{first_initial}-{last_initial}", f"{last_name}-{first_name}", f"{last_name}-{first_initial}", f"{last_initial}-{first_name}", f"{last_initial}-{first_initial}", f"{first_name}_{last_name}", f"{first_initial}_{last_name}", f"{first_name}_{last_initial}", f"{first_initial}_{last_initial}", f"{last_name}_{first_name}", f"{last_name}_{first_initial}", f"{last_initial}_{first_name}", f"{last_initial}_{first_initial}"])
+        # Last name first letter
+        l = last[0]
+        combinations.extend([f"{first}",
+                            f"{f}{last}",
+                            f"{first}.{last}",
+                            f"{first}{last}",
+                            f"{last}",
+                            f"{first}{l}",
+                            f"{f}.{last}",
+                            f"{last}{f}",
+                            f"{first}_{last}"])
 
     return combinations
+
 
 def find_email(employee, url):
     """Checks the domain to assure there is a mail server
        and then find the email using combinations of first and last name"""
+    if not url or type(url) != str:
+        return ""
 
     debounce = DebounceAPI()
-    domain = urlparse(url).netloc
-    if not url or type(url) != str:
-        return False
 
-    domain = domain.replace("www.", "")
+    # Strip to just domain part of the url, if needed
+    if "://" in url:
+        domain = urlparse(url).netloc
+    else:
+        domain = url
+
+    domain = domain.replace("www.", "").lower()
 
     # First confirm that the domain does have a mail server
     try:
@@ -43,14 +61,18 @@ def find_email(employee, url):
     accept_all_hits = 0
     for email in combinations:
         validation_resp = debounce.validate_email(email)
-        print(f"Email {email} is {validation_resp['debounce']['result']}. Reason: {validation_resp['debounce']['reason']}")
+        print(
+            f"Email {email} is {validation_resp['debounce']['result']}. Reason: {validation_resp['debounce']['reason']}")
         if validation_resp["debounce"]["code"] == "5":
-            print("Found email!")
+            print(f"Email found - {email}")
             return email
         elif validation_resp["debounce"]["code"] == "4":
             accept_all_hits += 1
-            if accept_all_hits >= 20:
+            if accept_all_hits >= 5:
                 return combinations[0]
+        # Uncomment this if you needs results FAST
+        # elif validation_resp["debounce"]["code"] == "7":
+        #     return ""
 
     print(f"No email found for {employee.first_name} {employee.last_name} @ {domain}")
     return ""

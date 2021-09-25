@@ -2,6 +2,7 @@
 *.csv
 companies_without_sites.txt
 tasks_store.txt
+b2b_database.db
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

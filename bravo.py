@@ -1,125 +1,187 @@
 import datetime
-import dataclasses
 import json
-from dataclasses import dataclass
+import csv
+import sys
+import urllib.parse
+from dataclasses import asdict
 from fuzzywuzzy import process
 
 from emails import find_email
 from api_interfaces import OpenCageAPI, DataForSEO
-from bravo import Company, Query, Employee, Address
-from functions import assert_maps_result, populate_maps_dataclass, linkedin_result_extract, rank_employee
+from functions import assert_maps_result, populate_maps_dataclass, \
+    linkedin_result_extract, rank_employee, MapsData, company_from_database, haversine
+from data_models import *
 
-
-@dataclass
-class MapsData:
-    """Holds all data that is relating to the google maps result"""
-    search_position: int
-    lat: float
-    long: float
-    rating: float
-    reviews: int
-    type: str
-    thumbnail: str
-
-
-@dataclass
-class Employee:
-    """Representation of an employee in a company."""
-    full_name: str
-    first_name: str
-    last_name: str
-    position: str
-    company: str
-    email: str
-    rank_score: int
-
-    # Debug info
-    search_title: str
-    linkedin_url: str
-
-    # For enabling the sort function and make it return highest rank first
-    def __lt__(self, other):
-        return self.rank_score > other.rank_score
-
-
-@dataclass
-class Query:
-    """Represents a query generated from input"""
-    sector: str
-    location: str
-    type: str
-    started_at: datetime.datetime
-    finished_at: datetime.datetime
-    stats: dict
-
-@dataclass
-class Address:
-    """Address data for a company"""
-    address: str
-    borough: str
-    line1: str
-    city: str
-    zip: str
-    region: str
-    country_code: str
-
-@dataclass
-class Company:
-    """Representation of a single company."""
-
-    name: str
-    website: str
-    address: Address
-    phone: str
-    employees: [Employee]
-    gmaps_data: MapsData
 
 
 class Query:
-    """ Represents a collection of results that resulted from a query."""
+    """Represents a user-made query which ties input to output
+       and stats collected along the way"""
+
     def __init__(self, query_type, **kwargs):
         self.type = query_type
         self.started_at = datetime.datetime.utcnow()
         if self.type == "standard":
-            self.location = kwargs["location"]
-            self.sector = kwargs["sector"]
+            self.query = QueryModel.create(type=self.type, location=kwargs["location"],
+                                           sector=kwargs["sector"])
+        elif self.type == "from_csv":
+            self.query = QueryModel.create(type=self.type)
 
-        self.id = self.new_query()
+    def save_results_db(self, companies):
+        for company in companies:
+            if company.done or not company.website:
+                continue
 
-    def new_query(self):
-        pass
+            if company.website and type(company.website) == str:
+                company.website = company.website.lower()
+            comp_instance = CompanyModel.create(name=company.name,
+                                                website=company.website,
+                                                phone=company.phone,
+                                                full_address=company.address.address,
+                                                borough=company.address.borough,
+                                                line1=company.address.line1,
+                                                city=company.address.city,
+                                                zip=company.address.zip,
+                                                region=company.address.region,
+                                                country_code=company.address.country_code,
+                                                query=self.query)
+
+            if company.gmaps_data:
+                # Save the maps data
+                MapsDataModel.create(search_position=company.gmaps_data.search_position,
+                                     lat=company.gmaps_data.lat, long=company.gmaps_data.long,
+                                     rating=company.gmaps_data.rating,
+                                     reviews=company.gmaps_data.reviews,
+                                     type=company.gmaps_data.type,
+                                     thumbnail=company.gmaps_data.thumbnail,
+                                     company=comp_instance)
+            # Save all of the employees
+            for employee in company.employees:
+                EmployeeModel.create(full_name=employee.full_name,
+                                     first_name=employee.first_name,
+                                     last_name=employee.last_name,
+                                     position=employee.position,
+                                     extracted_company=employee.company,
+                                     company=comp_instance,
+                                     email=employee.email,
+                                     rank_score=employee.rank_score,
+                                     search_title=employee.search_title,
+                                     pre_snippet=employee.pre_snippet,
+                                     linkedin_url=employee.linkedin_url)
 
     def standard_query(self, maps_results, search_results):
-        """Tracks the results of a normal query. Assign result counts at each step."""
+        """Saves the results of a normal query."""
+        self.query.finished_at = datetime.datetime.utcnow()
+
+        self.query.maps_results = len(maps_results)
+        self.query.search_results = len(search_results)
+        self.query.save()
+
+        # Save all of the companies
+        self.save_results_db(search_results)
+
+    def from_csv(self, search_results):
+        self.query.finished_at = datetime.datetime.utcnow()
+
+        self.query.search_results = len(search_results)
+        self.query.save()
+
+        self.save_results_db(search_results)
 
 
+def process_search_results(results, company):
+    """ Loops over a list of google search results, in a attempt to find employees of the given company """
+    employees = []
+
+    if not results:
+        return employees
+
+    # Track the results in a list, as they will be iterated over more than once
+    extracted_results = []
+    for result in results:
+        if result["type"] != 'organic':
+            continue
+
+        # Attempt to get name, positon, company from pre-snippet or title.
+        name, position, extracted_company = linkedin_result_extract(result)
+        if not extracted_company:
+            continue
+
+        extracted_results.append((name, position, extracted_company, result))
+
+    best_match = process.extractOne(company.name, [x[2] for x in extracted_results])
+    if not best_match:
+        return employees
+
+    # If ratio is below 70, the uncertainty is too high
+    # And no employees can be found with confidence
+    if best_match[1] < 70:
+        return employees
+
+    for name, position, extracted_company, result in extracted_results:
+        if extracted_company == best_match[0]:
+            employee = Employee(
+                first_name=name.split(" ")[0] if name else None,
+                last_name=name.split(" ")[-1] if name else None,
+                full_name=name,
+                position=position, company=extracted_company,
+                email="",
+                rank_score=rank_employee(result["rank_absolute"], position),
+                search_title=result["title"],
+                linkedin_url=result["url"],
+                pre_snippet=result["pre_snippet"])
+            if employee.first_name == employee.last_name:
+                employee.last_name = None
+            employees.append(employee)
+
+    employees.sort()
+    return employees
 
 
 class FlowManager:
 
     def __init__(self):
-
-        # Make the query object with starting values
-
         # Init the API modules
-        # self.serp_api = SerpAPI() Depreciated
         self.dfs = DataForSEO()
         self.ocage = OpenCageAPI()
+        
+        # A list of sites to ignore when trying to find a company website
+        # These sites will be indexed in google, as they are company information sites (eg. Pomanda)
+        with open("company_index_sites.txt", "r") as f:
+            self.company_index_sites = [x.strip() for x in f.readlines()]
+
+        self.searched_domains = [x.website.replace("www.", "").lower() for x in
+                                 CompanyModel.select(CompanyModel.website)]
 
     def standard_query(self, sector, location):
         """This executes the normal order of maps -> google result processing -> emails"""
-        query = Query()
-        query.standard_query(sector, location)
-        maps_results = self.gmaps_step(sector,location)
+        query = Query("standard", sector=sector, location=location)
+
+        maps_results = self.gmaps_step(sector, location)
         companies = self.search_step(maps_results)
+
         # Get the email for each companies top employee
         for company in companies:
-            if not company.employees:
-                continue
-
-            company.employees[0].email = find_email(company.employees[0], company.website)
+            if company.employees:
+                company.employees[0].email = find_email(company.employees[0], company.website)
 
         query.standard_query(maps_results, companies)
+
+        return companies
+
+    def from_csv(self, csv_file_location):
+        query = Query("from_csv")
+
+        companies = InputManager().csv_import(csv_file_location)
+        companies = self.find_website(companies)
+        companies = self.search_step(companies)
+
+        # Get the email for each companies top employee
+        for company in companies:
+            if company.employees and not company.done:
+                company.employees[0].email = find_email(company.employees[0], company.website)
+
+        query.from_csv(companies)
 
         return companies
 
@@ -150,7 +212,8 @@ class FlowManager:
             # Clean up the company title a little
             if " in " in result["title"]:
                 # Strips stuff like "Mortgage medics in Brighton" to "Mortgage medics"
-                result["title"].split(" in ")[0]
+                result["title"] = result["title"].split(" in ")[0]
+
             # Replace " & " with " and "
             result["title"].replace(" & ", " and ") if " & " in result["title"] else result["title"]
 
@@ -169,79 +232,137 @@ class FlowManager:
         return refined_results
 
     def search_step(self, companies):
-        # Submits the search tasks, and adds a task reference to the company object
-        for company in companies:
-            company.search_task = self.dfs.search_google(f"inurl:uk.linkedin.com/in {company.name}")["id"]
-            # with open("tasks_store.txt", "a") as f:
-            #     f.write(f"{company.name}|||{company.search_task}\n")
 
-            # with open("tasks_store.txt", "r") as f:
-            #     lines = [x.strip() for x in f.readlines()]
-            #     for line in lines:
-            #         if line.split("|||")[0] == company.name:
-            #             company.search_task = line.split("|||")[-1]
+        for i, company in enumerate(companies):
+            if company.website:
+                # Check if the company has already been done before
+                if CompanyModel.get_or_none(CompanyModel.name == company.name):
+                    companies[i] = company_from_database(company.name)
+                    print(f"{company.name} has already been done before, data loaded from DB")
+                else:
+                    # Submit the search task, and adds a task reference to the company object
+                    company.search_task = self.dfs.search_google(f"inurl:uk.linkedin.com/in {company.name}")["id"]
 
         # Retrieves the search task results
         for company in companies:
-            try:
-                results = self.dfs.get_task(company.search_task)
-                del company.search_task
-                company.employees = self.process_search_results(results, company)
-            except AttributeError:
-                pass
+            if not company.done and company.website:
+                try:
+                    results = self.dfs.get_task(company.search_task)
+                    del company.search_task
+                    company.employees = process_search_results(results, company)
+                except AttributeError:
+                    pass
 
-        self.query.finished_at = datetime.datetime.utcnow()
         return companies
 
-    def process_search_results(self, results, company):
-        """ Loops over a list of google search results, in a attempt to find employees of the given company """
-        employees = []
+    def find_website(self, companies):
+        """Two staged search for a company website, for companies that dont have one.
+           First step is to launch a maps search, trying to find a direct result (1 result)
+           Second step is to search google, ignoring all company index sites."""
 
-        if not results:
-            return employees
-
-        # Track the results in a list, as they will be iterated over more than once
-        extracted_results = []
-        for result in results:
-            if result["type"] != 'organic':
+        search_tasks = []
+        for company in companies:
+            # If website already there, or a the company already went through gmaps - skip
+            if company.website or company.gmaps_data or company.done:
                 continue
 
-            # Attempt to get name, positon, company from pre-snippet or title.
-            name, position, extracted_company = linkedin_result_extract(result)
-            if not extracted_company:
-                continue
+            # First step
+            maps_results = self.dfs.search_maps(company.name)
+            if len(maps_results) == 1 and assert_maps_result(maps_results[0], 54.249532, -4.119393, 543):
+                print(f"Direct maps match found for {company.name}")
+                # A direct result found, woohoo
+                if maps_results[0]["url"]:
+                    company.website = urllib.parse.urlsplit(maps_results[0]["url"].replace("www.", "")).netloc
+                    company.gmaps_data = populate_maps_dataclass(maps_results[0])
+                    continue
 
-            extracted_results.append((name, position, extracted_company,
-                                      result["title"], result["url"], result["rank_absolute"]))
+            # Second step
+            search_tasks.append((self.dfs.search_google(f"{company.name} United Kingdom"), company.name))
 
-        best_match = process.extractOne(company.name, [x[2] for x in extracted_results])
-        if not best_match:
-            return employees
+        for task, comp_name in search_tasks:
+            search_results = self.dfs.get_task(task)
+            for result in search_results[:50]:
+                if result["type"] != "organic":
+                    continue
 
-        # If ratio is below 70, the uncertainty is too high
-        # And no employees can be found with confidence
-        if best_match[1] < 70:
-            return employees
+                result_domain = urllib.parse.urlsplit(result["url"]).netloc
+                result_domain = result_domain.replace("www.", "")
 
-        for name, position, extracted_company, title, url, search_position in extracted_results:
-            if extracted_company == best_match[0]:
-                employee = Employee(
-                    first_name=name.split(" ")[0] if name else None,
-                    last_name=name.split(" ")[-1] if name else None,
-                    full_name=name,
-                    position=position, company=extracted_company,
-                    email="",
-                    rank_score=rank_employee(search_position, position),
-                    search_title=title,
-                    linkedin_url=url)
-                if employee.first_name == employee.last_name:
-                    employee.last_name = None
-                employees.append(employee)
+                if result_domain in self.company_index_sites:
+                    print(f"Skipped index site: {result_domain}")
+                    continue
+                elif result_domain in self.searched_domains:
+                    print(f"Skipped already saved site: {result_domain}")
+                    continue
 
-        employees.sort()
-        return employees
+                for company in companies:
+                    if company.name == comp_name:
+                        company.website = result_domain
+                        print(f"Found website: {result_domain}")
+                        self.searched_domains.append(result_domain)
+                break
+
+            if not company.website:
+                company.website = ""
+
+        return companies
+
+
+def create_basic_company(name, website):
+    comp = Company(name=name,
+                   website=website,
+                   address=Address(address=None, borough=None, line1=None, city=None, zip=None, region=None,
+                                   country_code=None),
+                   phone='',
+                   gmaps_data=None,
+                   employees=[])
+    return comp
+
 
 class InputManager:
+
+    def __init__(self):
+        # Instantiate output manager for saving outputs
+        self.output = OutputManager()
+
+    def parse_input(self):
+        # Parse the CLI arguments passed in and execute the correct flow
+        args = sys.argv[1:]
+
+        if args[0] == "standard":
+            output_csv = args[1]
+            self.standard_query_interactive(output_csv)
+        elif args[0] == "csv":
+            input_csv = args[1]
+            output_csv = args[2]
+            result = FlowManager().from_csv(input_csv)
+            self.output.output_csv(result, output_csv, True)
+
+    def csv_import(self, csv_file_location):
+        csv_lines = []
+        with open(csv_file_location, "r") as f:
+            csvreader = csv.reader(f)
+            for line in csvreader:
+                csv_lines.append(line)
+
+        companies = []
+        if len(csv_lines[0]) == 2:
+            for name, website in csv_lines:
+                companies.append(self.create_company_basic(name, website))
+        else:
+            name_index, website_index = False, False
+            try:
+                name_index = csv_lines[0].index("Company Name")
+                website_index = csv_lines[0].index("Company Website")
+            except ValueError:
+                print("name_index and website index not found")
+                pass
+
+            if name_index and website_index:
+                for line in csv_lines[1:]:
+                    companies.append(create_basic_company(line[name_index].strip(), line[website_index].strip()))
+
+        return list(filter(None, companies))
 
     def ask_input(self, question):
         """Ask the user a simple question, with a confirmation"""
@@ -251,7 +372,7 @@ class InputManager:
             answer = self.ask_input(question)
         return answer
 
-    def cli_input_method(self):
+    def standard_query_interactive(self, save_file):
         """Manual way to ask the user for the parameters of the search direct from CLI."""
 
         sector = self.ask_input("Type in the sector of business you want to target (removal company, plumbers, etc)")
@@ -259,7 +380,8 @@ class InputManager:
 
         print(f"The final query built: '{sector} in {location}'")
 
-        return FlowManager(sector, location, "full").standard_query()
+        result = FlowManager().standard_query(sector, location)
+        self.output.output_csv(result, save_file)
 
 
 class OutputManager:
@@ -267,43 +389,63 @@ class OutputManager:
     def output_json(self, results, file_name):
         json_array = []
         for x in results:
-            json_array.append(dataclasses.asdict(x))
+            json_array.append(asdict(x))
 
         with open(file_name, "w") as f:
             f.write(json.dumps(json_array))
 
     def output_csv(self, res, file_name, short_format=False):
         csv_lines = []
+
         if short_format:
             csv_headers = "Company name~Website~Employee name~Employee position~Employee email~Employee company"
         else:
-            csv_headers = "Company name~Website~Address~Phone~Employee name~Employee position~Employee email~Employee company~Employee result title~Employee linkedin page~google_maps_data~all_employees"
-        csv_lines.append(csv_headers
-                         )
+            csv_headers = "Company name~Website~Address~Phone~Employee name~Employee position~Employee email~Employee company~Employee linkedin page~google_maps_data~all_employees"
+        csv_lines.append(csv_headers)
+
         for c in res:
+            if not c.website:
+                continue
+
+            if c.gmaps_data:
+                gmaps_data = json.dumps(asdict(c.gmaps_data))
+            else:
+                gmaps_data = ""
+
             if short_format:
                 if len(c.employees) >= 1:
-                    csv_lines.append(f"{c.name}~{c.website}~{c.employees[0].full_name}~{c.employees[0].email}~{c.employees[0].company}")
+                    csv_lines.append(
+                        f"{c.name}~{c.website}~{c.employees[0].full_name}~{c.employees[0].position}~{c.employees[0].email}~{c.employees[0].company}")
                 else:
-                    csv_lines.append(f"{c.name}~{c.website}~~~")
+                    csv_lines.append(f"{c.name}~{c.website}~~~~")
             else:
                 all_employees = []
                 for e in c.employees:
-                    all_employees.append(dataclasses.asdict(e))
+                    all_employees.append(asdict(e))
 
                 if len(c.employees) >= 1:
+
                     csv_lines.append(
-                        f"{c.name}~{c.website}~{c.address}~{c.phone}~{c.employees[0].full_name}~{c.employees[0].position}~{c.employees[0].email}~{c.employees[0].company}~{c.employees[0].search_title}~{c.employees[0].linkedin_url}~{json.dumps(dataclasses.asdict(c.gmaps_data))}~{json.dumps(all_employees)}")
+                        f"{c.name}~{c.website}~{c.address.address}~{c.phone}~{c.employees[0].full_name}~{c.employees[0].position}~{c.employees[0].email}~{c.employees[0].company}~{c.employees[0].linkedin_url}~{gmaps_data}~{json.dumps(all_employees)}")
                 else:
                     csv_lines.append(
-                        f"{c.name}~{c.website}~{c.address}~{c.phone}~~~~~~{json.dumps(dataclasses.asdict(c.gmaps_data))}~{json.dumps(all_employees)}")
+                        f"{c.name}~{c.website}~{c.address}~{c.phone}~~~~~~{gmaps_data}~{json.dumps(all_employees)}")
 
         with open(file_name, "w") as f:
             f.write("\n".join(csv_lines))
 
 
 if __name__ == "__main__":
-    x = FlowManager("Mortgage broker", "Brighton", 1)
-    res = x.standard_query()
-    o = OutputManager()
-    o.output_csv(res, "query1.csv", True)
+    InputManager().parse_input()
+    # addr = Address(address="", borough="",
+    #                line1="", city="",
+    #                zip="", region="",
+    #                country_code="")
+    # c = Company(name="SETTEBELLO TRADING LTD",
+    #         website="",
+    #         address=addr,
+    #         phone="",
+    #         gmaps_data=None,
+    #         employees=[])
+    # a = FlowManager()
+    # print(a.find_website([c]))

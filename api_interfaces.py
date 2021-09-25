@@ -13,15 +13,19 @@ class API(ABC):
 
     session = Session()
 
-    def call(self, request) -> Response:
+    def call(self, request, retry_count=0) -> Response:
         """Issues the request to the API, and handle retrying the request"""
         try:
-            resp = self.session.send(request, timeout=60)
+            resp = self.session.send(request, timeout=70)
             assert resp.status_code == 200
         except AssertionError:
             raise APIResponseCodeException(resp.status_code, "Bad response code")
+            if retry_count < 6:
+                return self.call(request, retry_count+1)
         except requests.exceptions.ReadTimeout:
-            return self.call(request)
+            print("Request timed out, retrying")
+            if retry_count < 6:
+                return self.call(request, retry_count+1)
 
         self.confirm_response(resp)
 
@@ -186,10 +190,11 @@ class DataForSEO(API):
     @staticmethod
     def process_response(resp):
         resp = json.loads(resp.text)
-        if resp["tasks"][0]["data"]["se_type"] == "organic":
-            return resp["tasks"][0]
+        task = resp["tasks"][0]
+        if task["data"]["function"] == "live":
+            return task["result"][0]["items"]
         else:
-            return resp["tasks"][0]["result"][0]["items"]
+            return task
 
     def get_task(self, task_id):
         request = self.prepare_request(Request("GET", f"{self.api_base}/serp/google/organic/task_get/advanced/{task_id}"))
@@ -202,7 +207,7 @@ class DataForSEO(API):
             time.sleep(5)
             return self.get_task(task_id)
 
-    def search_maps(self, query, lat=52.520110, long=1.375725, z=10):
+    def search_maps(self, query, lat=52.520110, long=1.375725, z=6):
         """Does a live search for maps, returns the results immediately."""
         payload = [{
             "keyword": query,
@@ -214,18 +219,21 @@ class DataForSEO(API):
         request = self.create_request(payload, "/serp/google/maps/live/advanced")
         resp = self.call(request)
         results = self.process_response(resp)
-        return results
+        if not results:
+            return []
+        else:
+            return results
 
     def search_google(self, query):
-        """Submits the payload, but does not return the results straight away. Instead returns search identified
-           which can later be used to retrieve the results. This is cheaper and faster than the live method."""
+        """Submits the payload, but does not return the results straight away. Instead returns search identifier
+           which can later be used to retrieve the results. This is cheaper and faster in bulk than the live method."""
 
         payload = [{
             "keyword": query,
             "location_code": 2826,
             "language_code": "en",
             "se_domain": "google.co.uk",
-            "depth": 700,
+            "depth": 100,
             "priority": 2
         }]
 
@@ -235,6 +243,20 @@ class DataForSEO(API):
         #     with open("tasks_list.txt", "r") as f:
         #         return [x.strip() for x in f.readlines()]
         # else:
+        response = self.call(request)
+        return self.process_response(response)
+
+    def search_google_realtime(self, query):
+        """Same as above,"""
+        payload = [{
+            "keyword": query,
+            "location_code": 2826,
+            "language_code": "en",
+            "se_domain": "google.co.uk",
+            "depth": 100,
+        }]
+        path = "/serp/google/organic/live/advanced"
+        request = self.create_request(payload, path)
         response = self.call(request)
         return self.process_response(response)
 
@@ -359,5 +381,7 @@ class DebounceAPI(API):
 
 
 if __name__ == "__main__":
-    x = DebounceAPI()
-    x.validate_email("art@bridge.media")
+    # x = DebounceAPI()
+    # x.validate_email("art@bridge.media")
+    y = DataForSEO()
+    print(y.search_google_realtime("test query!"))
