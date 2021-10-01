@@ -294,6 +294,9 @@ class FlowManager:
                 elif result_domain in self.searched_domains:
                     print(f"Skipped already saved site: {result_domain}")
                     continue
+                elif ".gov.uk" in result_domain:
+                    print(f"Skipped .gov site: {result_domain}")
+                    continue
 
                 for company in companies:
                     if company.name == comp_name:
@@ -435,8 +438,18 @@ class OutputManager:
             f.write("\n".join(csv_lines))
 
 
+class Demo:
+
+    def __init__(self):
+        self.worker = FlowManager()
+
+    def find_website_single(self, company_name):
+        comp = create_basic_company(company_name, "")
+        comp = self.worker.find_website([comp])[0]
+
 if __name__ == "__main__":
     InputManager().parse_input()
+
     # addr = Address(address="", borough="",
     #                line1="", city="",
     #                zip="", region="",
@@ -449,3 +462,6 @@ if __name__ == "__main__":
     #         employees=[])
     # a = FlowManager()
     # print(a.find_website([c]))
+
+    # x = Demo()
+    # x.find_website_single("Bridge Media")

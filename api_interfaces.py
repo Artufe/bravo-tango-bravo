@@ -1,5 +1,4 @@
 import requests
-import psycopg2
 import urllib
 import json
 import time
@@ -19,9 +18,11 @@ class API(ABC):
             resp = self.session.send(request, timeout=70)
             assert resp.status_code == 200
         except AssertionError:
-            raise APIResponseCodeException(resp.status_code, "Bad response code")
+
             if retry_count < 6:
                 return self.call(request, retry_count+1)
+            else:
+                raise APIResponseCodeException(resp.status_code, "Failed to get 2xx response 6 times.")
         except requests.exceptions.ReadTimeout:
             print("Request timed out, retrying")
             if retry_count < 6:
