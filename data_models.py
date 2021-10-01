@@ -1,7 +1,11 @@
-from peewee import SqliteDatabase, Model, CharField, \
+import os
+
+from peewee import Model, CharField, \
     ForeignKeyField, TextField, DateTimeField, BooleanField, IntegerField, FloatField
+from playhouse.postgres_ext import PostgresqlExtDatabase
 from dataclasses import dataclass
 import datetime
+import sys
 
 
 @dataclass
@@ -62,8 +66,8 @@ class Company:
     done: bool = False
 
 
-db = SqliteDatabase('b2b_database.db')
-
+db_pass = os.environ.get("DB_PASS")
+db = PostgresqlExtDatabase("arthur", user="arthur", password=db_pass, options="-c search_path=b2b")
 
 class BaseModel(Model):
     class Meta:
@@ -137,3 +141,9 @@ class MapsDataModel(BaseModel):
 
 if __name__ == "__main__":
     db.create_tables([QueryModel, MapsDataModel, CompanyModel, EmployeeModel])
+
+    # Run a migration if called with 'migrate' CLI arg.
+    # Needs to be run once everytime the DB struct is changed.
+    if len(sys.argv) > 1 and sys.argv[1] == "migrate":
+        from playhouse.migrate import *
+
