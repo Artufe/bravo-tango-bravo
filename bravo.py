@@ -5,13 +5,15 @@ import sys
 import urllib.parse
 from dataclasses import asdict
 from fuzzywuzzy import process
+import pika
+import gspread
 
 from emails import find_email
 from api_interfaces import OpenCageAPI, DataForSEO
 from functions import assert_maps_result, populate_maps_dataclass, \
-    linkedin_result_extract, rank_employee, MapsData, company_from_database, haversine
+    linkedin_result_extract, rank_employee, MapsData, company_from_database, haversine, \
+    load_query_from_db
 from data_models import *
-
 
 
 class Query:
@@ -27,6 +29,15 @@ class Query:
         elif self.type == "from_csv":
             self.query = QueryModel.create(type=self.type)
 
+        # RabbitMQ init
+        # Connect with pika to RabbitMQ in localhost
+        self.rmq = pika.BlockingConnection(pika.URLParameters('amqp://arthur:FlaskTubCupp@localhost:5672/%2F'))
+        # Initialize a channel
+        self.rmqc = self.rmq.channel()
+        self.rmqc.exchange_declare(exchange='scrapy.b2b', durable=True)
+        self.rmqc.queue_declare(queue='b2b.contacts')
+        self.rmqc.queue_bind(exchange='scrapy.b2b', queue='b2b.contacts')
+
     def save_results_db(self, companies):
         for company in companies:
             if company.done or not company.website:
@@ -34,6 +45,8 @@ class Query:
 
             if company.website and type(company.website) == str:
                 company.website = company.website.lower()
+                company.website = company.website.replace("https://", "").replace("http://", "")
+
             comp_instance = CompanyModel.create(name=company.name,
                                                 website=company.website,
                                                 phone=company.phone,
@@ -69,6 +82,10 @@ class Query:
                                      pre_snippet=employee.pre_snippet,
                                      linkedin_url=employee.linkedin_url)
 
+    def push_to_rmq(self, companies):
+        for comp in companies:
+            self.rmqc.basic_publish(exchange='scrapy.b2b', routing_key='b2b.contacts', body=comp.website)
+
     def standard_query(self, maps_results, search_results):
         """Saves the results of a normal query."""
         self.query.finished_at = datetime.datetime.utcnow()
@@ -80,13 +97,20 @@ class Query:
         # Save all of the companies
         self.save_results_db(search_results)
 
+        # Put in queue for scrapy spider to process further
+        self.push_to_rmq(search_results)
+
     def from_csv(self, search_results):
         self.query.finished_at = datetime.datetime.utcnow()
 
         self.query.search_results = len(search_results)
         self.query.save()
 
+        # Save all of the companies
         self.save_results_db(search_results)
+
+        # Put in queue for scrapy spider to process further
+        self.push_to_rmq(search_results)
 
 
 def process_search_results(results, company):
@@ -121,9 +145,9 @@ def process_search_results(results, company):
     for name, position, extracted_company, result in extracted_results:
         if extracted_company == best_match[0]:
             employee = Employee(
-                first_name=name.split(" ")[0] if name else None,
-                last_name=name.split(" ")[-1] if name else None,
-                full_name=name,
+                first_name=name.split(" ")[0] if name else "",
+                last_name=name.split(" ")[-1] if name else "",
+                full_name=name if name else "",
                 position=position, company=extracted_company,
                 email="",
                 rank_score=rank_employee(result["rank_absolute"], position),
@@ -131,7 +155,7 @@ def process_search_results(results, company):
                 linkedin_url=result["url"],
                 pre_snippet=result["pre_snippet"])
             if employee.first_name == employee.last_name:
-                employee.last_name = None
+                employee.last_name = ""
             employees.append(employee)
 
     employees.sort()
@@ -208,6 +232,10 @@ class FlowManager:
 
             if not assert_maps_result(result, loc_lat, loc_long):
                 continue
+            # Clean up the website
+            website = result["url"].replace("https://", "").replace("http://", "")
+            if website[-1] == "/":
+                website = website[:-1]
 
             # Clean up the company title a little
             if " in " in result["title"]:
@@ -221,6 +249,7 @@ class FlowManager:
                            line1=result["address_info"]["address"], city=result["address_info"]["city"],
                            zip=result["address_info"]["zip"], region=result["address_info"]["region"],
                            country_code=result["address_info"]["country_code"])
+
             comp = Company(name=result["title"],
                            website=result["url"],
                            address=addr,
@@ -437,6 +466,56 @@ class OutputManager:
         with open(file_name, "w") as f:
             f.write("\n".join(csv_lines))
 
+    def output_gsheets(self, query_id):
+        """ Takes a query ID and creates a new Google Sheet with the results"""
+
+        query = QueryModel.get_or_none(QueryModel.id == query_id)
+        if not query:
+            print("Query not found")
+            return
+        companies = CompanyModel.select().where(query == query)
+        all_employees = EmployeeModel.select().join(CompanyModel).where(CompanyModel.query_id == 9)
+
+        # Connect to gsheets using a service account connection key file in home dir
+        gc = gspread.service_account(filename="/home/arthur/bravo-tango-bravo-328101-2e8872e308a4.json")
+
+        # Open a sheet from a spreadsheet in one go
+        if query.type == "standard":
+            sh = gc.create(f"[B2B] {query.sector} in {query.location}")
+        elif query.type == "from_csv":
+            sh = gc.create(f"[B2B] CSV import #{query.id}")
+        else:
+            sh = gc.create(f"[B2B] Unknown query type (TODO) #{query.id}")
+
+        # Share with myself
+        sh.share('flippincreepers@gmail.com', perm_type='user', role='writer')
+
+        # Setup the required worksheets, delete the default sheet,
+        sum_sheet = sh.add_worksheet(title="Summary", rows="100", cols="20")
+        com_sheet = sh.add_worksheet(title="Companies", rows="100", cols="20")
+        emp_sheet = sh.add_worksheet(title="Employees", rows="100", cols="20")
+        sh.del_worksheet(sh.sheet1)
+
+        # Populate the Companies sheet with headers and data
+        com_sheet.update("A1:N1", [["Company Name", "Website", "Contact Email", "Employees found", "Phone", "Full Address", "Linkedin", "Twitter", "Facebook", "Instagram", "Youtube", "Maps Rating", "Maps Reviews", "Maps Position"]])
+        com_rows = []
+        i = 0
+        for comp, i in zip(companies, range(2, 10000)):
+            employees = EmployeeModel.select().where(EmployeeModel.company == comp).count()
+            maps_data = MapsDataModel.select().where(company==comp)
+            com_rows.append([comp.name, comp.website, comp.contact_email, employees, comp.phone, comp.full_address, comp.linkedin, comp.twitter, comp.facebook, comp.instagram, comp.youtube])
+        if i!=0:
+            com_sheet.update(f"A2:K{i}", com_rows)
+
+        # Populate the employees table with headers and all employees of the companies in the query
+        emp_sheet.update("A1:F1", [["Company Name", "Full Name", "Position", "Email", "Rank Score", "Linkedin URL"]])
+        emp_rows = []
+        i = 0
+        for emp, i in zip(all_employees, range(2, 1000000)):
+            emp_rows.append([emp.company.name, emp.full_name, emp.position, emp.email, emp.rank_score, emp.linkedin_url])
+        if i!= 0:
+            emp_sheet.update(f"A2:F{i}", emp_rows)
+
 
 class Demo:
 
@@ -448,7 +527,8 @@ class Demo:
         comp = self.worker.find_website([comp])[0]
 
 if __name__ == "__main__":
-    InputManager().parse_input()
+    # InputManager().parse_input()
+    OutputManager().output_gsheets(9)
 
     # addr = Address(address="", borough="",
     #                line1="", city="",

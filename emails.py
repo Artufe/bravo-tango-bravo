@@ -13,7 +13,9 @@ def email_combinations(first, last):
 
     # First name first letter
     f = first[0]
-    if not last:
+    if not last and not first:
+        return combinations
+    elif not last:
         combinations.extend([f"{first}",
                             f"{f}"])
     else:
@@ -50,7 +52,7 @@ def find_email(employee, url):
 
     # First confirm that the domain does have a mail server
     try:
-        answers = dns.resolver.resolve(domain, 'MX')
+        dns.resolver.resolve(domain, 'MX')
     except:
         print(f"No email server found for {domain}")
         return ""
@@ -60,11 +62,16 @@ def find_email(employee, url):
 
     accept_all_hits = 0
     for email in combinations:
-        validation_resp = debounce.validate_email(email)
-        print(
-            f"Email {email} is {validation_resp['debounce']['result']}. Reason: {validation_resp['debounce']['reason']}")
+        try:
+            validation_resp = debounce.validate_email(email)
+        except KeyboardInterrupt:
+            print("Skipping email due to manual override")
+            continue
+
+        # print(
+        #     f"{email} is {validation_resp['debounce']['result']}. Reason: {validation_resp['debounce']['reason']}")
         if validation_resp["debounce"]["code"] == "5":
-            print(f"Email found - {email}")
+            print(f"Email found - {email} !!")
             return email
         elif validation_resp["debounce"]["code"] == "4":
             accept_all_hits += 1

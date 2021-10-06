@@ -100,6 +100,15 @@ class CompanyModel(BaseModel):
     zip = CharField(null=True)
     region = CharField(null=True)
     country_code = CharField(null=True)
+    contact_email = CharField(null=True)
+    other_emails = TextField(null=True)
+
+    # Socials
+    linkedin = CharField(null=True)
+    twitter = CharField(null=True)
+    facebook = CharField(null=True)
+    instagram = CharField(null=True)
+    youtube = CharField(null=True)
 
     query = ForeignKeyField(QueryModel, backref='company')
 
@@ -140,10 +149,13 @@ class MapsDataModel(BaseModel):
 
 
 if __name__ == "__main__":
+    # Creates the tables, if not already there
     db.create_tables([QueryModel, MapsDataModel, CompanyModel, EmployeeModel])
 
     # Run a migration if called with 'migrate' CLI arg.
     # Needs to be run once everytime the DB struct is changed.
     if len(sys.argv) > 1 and sys.argv[1] == "migrate":
         from playhouse.migrate import *
+        migrator = PostgresqlMigrator(db)
+        # Migration code goes here
 

@@ -154,5 +154,15 @@ def company_from_database(company_name):
     return company
 
 
+def load_query_from_db(query_id):
+    query = QueryModel.get(QueryModel.id == query_id)
+    companies = CompanyModel.select().where(CompanyModel.query == query)
+    comp_dc = []
+    for comp in companies:
+        comp_dc.append(company_from_database(comp.name))
+
+    return query, comp_dc
+
+
 if __name__ == "__main__":
-    print(company_from_database("AFFINITY OUTSOURCING CONSULTANTS LIMITED"))
+    print(load_query_from_db(9))
