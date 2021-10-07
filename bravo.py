@@ -488,7 +488,7 @@ class OutputManager:
             sh = gc.create(f"[B2B] Unknown query type (TODO) #{query.id}")
 
         # Share with myself
-        sh.share('flippincreepers@gmail.com', perm_type='user', role='writer')
+        sh.share('greg@bridge.media', perm_type='user', role='writer')
 
         # Setup the required worksheets, delete the default sheet,
         sum_sheet = sh.add_worksheet(title="Summary", rows="100", cols="20")
@@ -497,24 +497,55 @@ class OutputManager:
         sh.del_worksheet(sh.sheet1)
 
         # Populate the Companies sheet with headers and data
-        com_sheet.update("A1:N1", [["Company Name", "Website", "Contact Email", "Employees found", "Phone", "Full Address", "Linkedin", "Twitter", "Facebook", "Instagram", "Youtube", "Maps Rating", "Maps Reviews", "Maps Position"]])
-        com_rows = []
-        i = 0
-        for comp, i in zip(companies, range(2, 10000)):
+        com_rows = [["Company Name", "Website", "Contact Email",
+                     "Employees found", "Phone", "Full Address",
+                     "Linkedin", "Twitter", "Facebook", "Instagram",
+                     "Youtube", "Maps Rating", "Maps Reviews", "Maps Position"]]
+        for comp in companies:
             employees = EmployeeModel.select().where(EmployeeModel.company == comp).count()
-            maps_data = MapsDataModel.select().where(company==comp)
-            com_rows.append([comp.name, comp.website, comp.contact_email, employees, comp.phone, comp.full_address, comp.linkedin, comp.twitter, comp.facebook, comp.instagram, comp.youtube])
-        if i!=0:
-            com_sheet.update(f"A2:K{i}", com_rows)
+            maps_data = MapsDataModel.get(MapsDataModel.company == comp)
+            single_row = [comp.name, comp.website, comp.contact_email,
+                             employees, comp.phone, comp.full_address,
+                             comp.linkedin, comp.twitter, comp.facebook,
+                             comp.instagram, comp.youtube]
+            if maps_data:
+                single_row.extend([maps_data.rating, maps_data.reviews, f"{maps_data.lat},{maps_data.long}"])
+
+            com_rows.append(single_row)
+
+        com_sheet.update(f"A1:N{len(com_rows)}", com_rows)
 
         # Populate the employees table with headers and all employees of the companies in the query
-        emp_sheet.update("A1:F1", [["Company Name", "Full Name", "Position", "Email", "Rank Score", "Linkedin URL"]])
-        emp_rows = []
-        i = 0
-        for emp, i in zip(all_employees, range(2, 1000000)):
+        emp_rows = [["Company Name", "Full Name", "Position",
+                     "Email", "Rank Score", "Linkedin URL"]]
+
+        for emp in all_employees:
             emp_rows.append([emp.company.name, emp.full_name, emp.position, emp.email, emp.rank_score, emp.linkedin_url])
-        if i!= 0:
-            emp_sheet.update(f"A2:F{i}", emp_rows)
+
+        emp_sheet.update(f"A1:F{len(emp_rows)}", emp_rows)
+
+        # Populate the summary sheet with stats for the query
+        # And short format table of all emails found and their most vital info
+        emails_found = all_employees.select().where(EmployeeModel.email != '').count()
+        email_rate = (companies.count()/emails_found) * 100
+        sum_sheet.update("A1:D1", [[f"Results: {companies.count()}",
+                                    f"Emails: {emails_found}",
+                                    f"Email Rate: {email_rate}",
+                                    f"Employees: {all_employees.count()}"]])
+        time_taken = query.finished_at - query.started_at
+        minutes_taken = time_taken.seconds//60
+        sum_sheet.update("I4:K6", [[None,                                                "Query Stats:",                                  None],
+                                [f"Launched:",                                            "Finished:",                               "Time Taken:"],
+               [f"{query.started_at.strftime('%d/%m/%Y, %H:%M:%S')}", f"{query.finished_at.strftime('%d/%m/%Y, %H:%M:%S')}", f"{minutes_taken} minutes"]])
+
+        # Short format table of results with emails
+        sum_rows = [["Email", "First Name", "Last Name", "Position", "Company"]]
+
+        for employee in all_employees.select().where(EmployeeModel.email != ''):
+            sum_rows.append([employee.email, employee.first_name,
+                             employee.last_name, employee.position,
+                             employee.company.name])
+        sum_sheet.update(f"A3:E{len(sum_rows)+2}", sum_rows)
 
 
 class Demo:
