@@ -477,7 +477,7 @@ class OutputManager:
         all_employees = EmployeeModel.select().join(CompanyModel).where(CompanyModel.query_id == 9)
 
         # Connect to gsheets using a service account connection key file in home dir
-        gc = gspread.service_account(filename="/home/arthur/bravo-tango-bravo-328101-2e8872e308a4.json")
+        gc = gspread.service_account(filename="/home/arthur/bravo-tango-bravo-305e7e39fd14.json")
 
         # Open a sheet from a spreadsheet in one go
         if query.type == "standard":
