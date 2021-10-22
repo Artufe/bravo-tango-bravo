@@ -34,9 +34,9 @@ class Query:
         self.rmq = pika.BlockingConnection(pika.URLParameters('amqp://arthur:FlaskTubCupp@localhost:5672/%2F'))
         # Initialize a channel
         self.rmqc = self.rmq.channel()
-        self.rmqc.exchange_declare(exchange='scrapy.b2b', durable=True)
-        self.rmqc.queue_declare(queue='b2b.contacts')
-        self.rmqc.queue_bind(exchange='scrapy.b2b', queue='b2b.contacts')
+        self.rmqc.exchange_declare(exchange='B2B', durable=True)
+        self.rmqc.queue_declare(queue='contacts')
+        self.rmqc.queue_bind(exchange='B2B', queue='contacts')
 
     def save_results_db(self, companies):
         for company in companies:
@@ -84,7 +84,7 @@ class Query:
 
     def push_to_rmq(self, companies):
         for comp in companies:
-            self.rmqc.basic_publish(exchange='scrapy.b2b', routing_key='b2b.contacts', body=comp.website)
+            self.rmqc.basic_publish(exchange='B2B', routing_key='b2b.contacts', body=comp.website)
 
     def standard_query(self, maps_results, search_results):
         """Saves the results of a normal query."""
@@ -194,7 +194,7 @@ class FlowManager:
         return companies
 
     def from_csv(self, csv_file_location):
-        query = Query("from_csv")
+        self.query = Query("from_csv")
 
         companies = InputManager().csv_import(csv_file_location)
         companies = self.find_website(companies)
@@ -205,7 +205,7 @@ class FlowManager:
             if company.employees and not company.done:
                 company.employees[0].email = find_email(company.employees[0], company.website)
 
-        query.from_csv(companies)
+        self.query.from_csv(companies)
 
         return companies
 
@@ -366,9 +366,22 @@ class InputManager:
             self.standard_query_interactive(output_csv)
         elif args[0] == "csv":
             input_csv = args[1]
-            output_csv = args[2]
-            result = FlowManager().from_csv(input_csv)
-            self.output.output_csv(result, output_csv, True)
+            manager = FlowManager()
+            result = manager.from_csv(input_csv)
+            
+            if len(args) == 4 and args[2] == "gsheets":
+                share_email = args[3]
+                self.output.output_gsheets(manager.query.query.id, share_email)
+            elif len(args) == 3:
+                self.output.output_csv(result, output_csv, True)
+            else:
+                print("""No output specified as last argument. 
+                Not generating a output file upon completion! 
+                (CTRL + C NOW IF YOU DONT WANT THIS)
+                Please specify eithe a file name for CSV file output, or Email for Google sheets output.
+                Example:
+                 python3 bravo.py csv ./input_file ./output.csv
+                 python3 bravo.py csv ./input.csv gsheets greg@brdige.media""")
 
     def csv_import(self, csv_file_location):
         csv_lines = []
@@ -387,8 +400,12 @@ class InputManager:
                 name_index = csv_lines[0].index("Company Name")
                 website_index = csv_lines[0].index("Company Website")
             except ValueError:
-                print("name_index and website index not found")
-                pass
+                try:
+                    name_index = csv_lines[0].index("company_name")
+                    website_index = csv_lines[0].index("company_website")
+                except:
+                    print("name_index and website index not found")
+                    pass
 
             if name_index and website_index:
                 for line in csv_lines[1:]:
@@ -466,15 +483,15 @@ class OutputManager:
         with open(file_name, "w") as f:
             f.write("\n".join(csv_lines))
 
-    def output_gsheets(self, query_id):
+    def output_gsheets(self, query_id, share_email):
         """ Takes a query ID and creates a new Google Sheet with the results"""
 
         query = QueryModel.get_or_none(QueryModel.id == query_id)
         if not query:
             print("Query not found")
             return
-        companies = CompanyModel.select().where(query == query)
-        all_employees = EmployeeModel.select().join(CompanyModel).where(CompanyModel.query_id == 9)
+        companies = CompanyModel.select().where(CompanyModel.query == query)
+        all_employees = EmployeeModel.select().join(CompanyModel).where(CompanyModel.query == query)
 
         # Connect to gsheets using a service account connection key file in home dir
         gc = gspread.service_account(filename="/home/arthur/bravo-tango-bravo-305e7e39fd14.json")
@@ -488,7 +505,7 @@ class OutputManager:
             sh = gc.create(f"[B2B] Unknown query type (TODO) #{query.id}")
 
         # Share with myself
-        sh.share('greg@bridge.media', perm_type='user', role='writer')
+        sh.share(share_email, perm_type='user', role='writer')
 
         # Setup the required worksheets, delete the default sheet,
         sum_sheet = sh.add_worksheet(title="Summary", rows="100", cols="20")
@@ -503,7 +520,7 @@ class OutputManager:
                      "Youtube", "Maps Rating", "Maps Reviews", "Maps Position"]]
         for comp in companies:
             employees = EmployeeModel.select().where(EmployeeModel.company == comp).count()
-            maps_data = MapsDataModel.get(MapsDataModel.company == comp)
+            maps_data = MapsDataModel.get_or_none(MapsDataModel.company == comp)
             single_row = [comp.name, comp.website, comp.contact_email,
                              employees, comp.phone, comp.full_address,
                              comp.linkedin, comp.twitter, comp.facebook,
@@ -527,7 +544,11 @@ class OutputManager:
         # Populate the summary sheet with stats for the query
         # And short format table of all emails found and their most vital info
         emails_found = all_employees.select().where(EmployeeModel.email != '').count()
-        email_rate = (companies.count()/emails_found) * 100
+        if emails_found == 0:
+            email_rate = 0
+        else:
+            email_rate = (companies.count()/emails_found) * 100
+
         sum_sheet.update("A1:D1", [[f"Results: {companies.count()}",
                                     f"Emails: {emails_found}",
                                     f"Email Rate: {email_rate}",
@@ -559,20 +580,4 @@ class Demo:
 
 if __name__ == "__main__":
     # InputManager().parse_input()
-    OutputManager().output_gsheets(9)
-
-    # addr = Address(address="", borough="",
-    #                line1="", city="",
-    #                zip="", region="",
-    #                country_code="")
-    # c = Company(name="SETTEBELLO TRADING LTD",
-    #         website="",
-    #         address=addr,
-    #         phone="",
-    #         gmaps_data=None,
-    #         employees=[])
-    # a = FlowManager()
-    # print(a.find_website([c]))
-
-    # x = Demo()
-    # x.find_website_single("Bridge Media")
+    OutputManager().output_gsheets(29, "greg@bridge.media")

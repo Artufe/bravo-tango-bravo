@@ -101,7 +101,7 @@ def linkedin_result_extract(result):
 def rank_employee(search_position, position):
     """Scores employee based on search position and keywords within position
        Higher score equals more likely the persons higher ranked within the company
-       Returns the company with the employees sorted from highest to lowest score"""
+       Returns the employee rank score"""
 
     first_choice = ["owner", "ceo", "chief", "principal", "founder"]
     second_choice = ["director", "md", "manager", "admin", "exec", "president"]
