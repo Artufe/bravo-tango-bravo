@@ -192,6 +192,9 @@ class DataForSEO(API):
     def process_response(resp):
         resp = json.loads(resp.text)
         task = resp["tasks"][0]
+        if not task:
+            return []
+
         if task["data"]["function"] == "live":
             return task["result"][0]["items"]
         else:

@@ -31,12 +31,13 @@ class Query:
 
         # RabbitMQ init
         # Connect with pika to RabbitMQ in localhost
-        self.rmq = pika.BlockingConnection(pika.URLParameters('amqp://arthur:FlaskTubCupp@localhost:5672/%2F'))
+        self.rmq_connection_params = pika.URLParameters('amqp://arthur:FlaskTubCupp@localhost:5672/%2F')
+        self.connection = pika.BlockingConnection(self.rmq_connection_params)
         # Initialize a channel
-        self.rmqc = self.rmq.channel()
-        self.rmqc.exchange_declare(exchange='B2B', durable=True)
-        self.rmqc.queue_declare(queue='contacts')
-        self.rmqc.queue_bind(exchange='B2B', queue='contacts')
+        self.channel = self.connection.channel()
+        self.channel.exchange_declare(exchange='B2B', durable=True)
+        self.channel.queue_declare(queue='contacts')
+        self.channel.queue_bind(exchange='B2B', queue='contacts')
 
     def save_results_db(self, companies):
         for company in companies:
@@ -84,7 +85,7 @@ class Query:
 
     def push_to_rmq(self, companies):
         for comp in companies:
-            self.rmqc.basic_publish(exchange='B2B', routing_key='b2b.contacts', body=comp.website)
+            self.channel.basic_publish(exchange='B2B', routing_key='contacts', body=comp.website)
 
     def standard_query(self, maps_results, search_results):
         """Saves the results of a normal query."""
@@ -275,12 +276,16 @@ class FlowManager:
         # Retrieves the search task results
         for company in companies:
             if not company.done and company.website:
+                if not company.search_task:
+                    print(f"No search results for company {company.name}")
+                    continue
                 try:
                     results = self.dfs.get_task(company.search_task)
                     del company.search_task
                     company.employees = process_search_results(results, company)
                 except AttributeError:
-                    pass
+                    print("Attribute exception while retrieving search results")
+
 
         return companies
 
@@ -403,13 +408,14 @@ class InputManager:
                 try:
                     name_index = csv_lines[0].index("company_name")
                     website_index = csv_lines[0].index("company_website")
-                except:
-                    print("name_index and website index not found")
-                    pass
+                except ValueError:
+                    print("name index and website index not found")
 
             if name_index and website_index:
+                print(f"Company name col: {name_index}\nCompany website col: {website_index}")
                 for line in csv_lines[1:]:
-                    companies.append(create_basic_company(line[name_index].strip(), line[website_index].strip()))
+                    if line[name_index].strip():
+                        companies.append(create_basic_company(line[name_index].strip(), line[website_index].strip()))
 
         return list(filter(None, companies))
 
@@ -578,6 +584,7 @@ class Demo:
         comp = create_basic_company(company_name, "")
         comp = self.worker.find_website([comp])[0]
 
+
 if __name__ == "__main__":
-    # InputManager().parse_input()
-    OutputManager().output_gsheets(29, "greg@bridge.media")
+    InputManager().parse_input()
+    # OutputManager().output_gsheets(32, "greg@bridge.media")
