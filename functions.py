@@ -26,7 +26,8 @@ def assert_maps_result(result, loc_lat, loc_long, distance=150):
     if not result.get("url"):
         with open("companies_without_sites.txt", "a") as f:
             f.write(f"{result.get('title')}|{result.get('phone')}|{result.get('category')}|{result.get('address')}\n")
-
+        return False
+    
     # Result must have lat long
     if not "latitude" in result or not "longitude" in result:
         return False
@@ -39,8 +40,9 @@ def assert_maps_result(result, loc_lat, loc_long, distance=150):
     distance_from_location = haversine(loc_lat, loc_long,
                                        result["latitude"],
                                        result["longitude"])
-    
-    if distance_from_location > distance:
+
+    # If longitude equals exactly 180, the business does not have a location. This is the default value
+    if distance_from_location > distance and result["longitude"] != 180:
         print(f"Result {result['title']} was {distance_from_location}km away from search location origin, skipping")
         return False
 

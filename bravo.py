@@ -178,12 +178,12 @@ class FlowManager:
         self.searched_domains = [x.website.replace("www.", "").lower() for x in
                                  CompanyModel.select(CompanyModel.website)]
 
-    def standard_query(self, sector, location):
+    def standard_query(self, sector, location, domain="uk.linkedin.com"):
         """This executes the normal order of maps -> google result processing -> emails"""
         query = Query("standard", sector=sector, location=location)
 
         maps_results = self.gmaps_step(sector, location)
-        companies = self.search_step(maps_results)
+        companies = self.search_step(maps_results, domain)
 
         # Get the email for each companies top employee
         for company in companies:
@@ -217,7 +217,8 @@ class FlowManager:
         location_data = self.ocage.translate_forwards(location)
         loc_lat = location_data["geometry"]["lat"]
         loc_long = location_data["geometry"]["lng"]
-
+        print(loc_lat)
+        print(loc_long)
         # Call to Google maps, with lat long and zoom levels to use as the origin of the search
         maps_results = self.dfs.search_maps(f"{sector} in {location}", loc_lat, loc_long, 11)
 
@@ -261,7 +262,7 @@ class FlowManager:
 
         return refined_results
 
-    def search_step(self, companies):
+    def search_step(self, companies, domain="uk.linkedin.com"):
 
         for i, company in enumerate(companies):
             if company.website:
@@ -271,7 +272,7 @@ class FlowManager:
                     print(f"{company.name} has already been done before, data loaded from DB")
                 else:
                     # Submit the search task, and adds a task reference to the company object
-                    company.search_task = self.dfs.search_google(f"inurl:uk.linkedin.com/in {company.name}")["id"]
+                    company.search_task = self.dfs.search_google(f"inurl:{domain}/in {company.name}")["id"]
 
         # Retrieves the search task results
         for company in companies:
@@ -387,6 +388,8 @@ class InputManager:
                 Example:
                  python3 bravo.py csv ./input_file ./output.csv
                  python3 bravo.py csv ./input.csv gsheets greg@brdige.media""")
+        elif args[0] == "export" and args[1] == "gsheet":
+            OutputManager().output_gsheets(int(args[2]), args[3])
 
     def csv_import(self, csv_file_location):
         csv_lines = []
@@ -432,10 +435,11 @@ class InputManager:
 
         sector = self.ask_input("Type in the sector of business you want to target (removal company, plumbers, etc)")
         location = self.ask_input("Type in the location you want to target (Brighton, London, etc)")
+        domain = self.ask_input("Enter the linkedin domain to target (uk.linkedin.com, au.linkedin.com, or just linkedin.com")
 
-        print(f"The final query built: '{sector} in {location}'")
+        print(f"The final query built: '{sector} in {location}' using the {domain} linkedin")
 
-        result = FlowManager().standard_query(sector, location)
+        result = FlowManager().standard_query(sector, location, domain)
         self.output.output_csv(result, save_file)
 
 
@@ -587,4 +591,3 @@ class Demo:
 
 if __name__ == "__main__":
     InputManager().parse_input()
-    # OutputManager().output_gsheets(32, "greg@bridge.media")

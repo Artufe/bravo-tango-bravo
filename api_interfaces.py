@@ -159,7 +159,6 @@ class SerpAPI(API):
             "q": query,
             "start": start,
             "engine": "google",
-            "google_domain": "google.co.uk",
             "hl": "en",
         }
         request = self.create_request(request_data, path)
@@ -217,7 +216,6 @@ class DataForSEO(API):
             "keyword": query,
             "location_coordinate": f"{lat},{long},{z}z",
             "language_code": "en",
-            "se_domain": "google.co.uk",
             "depth": 700
         }]
         request = self.create_request(payload, "/serp/google/maps/live/advanced")
@@ -301,8 +299,7 @@ class OpenCageAPI(API):
 
     def translate_forwards(self, location):
         data = {
-            "q": location,
-            "countrycode": "gb"
+            "q": location
         }
         request = self.create_request(data)
         response = self.call(request)
