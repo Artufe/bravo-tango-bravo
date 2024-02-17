@@ -73,7 +73,7 @@ class SerpAPI(API):
        Depreciated due to lack of the key pre-snippet datapoint. Replaced by DataForSeo"""
 
     api_base = "https://serpapi.com/"
-    api_key = "7a755a396df5fb80d3c5e5161393799cbac0d7f2ea50f4f815ea7a7bdc81a78a"
+    api_key = "..." # Put your own
 
     def confirm_response(self, resp):
         try:
@@ -170,7 +170,7 @@ class DataForSEO(API):
     """Uses the serps API from dataforseo.com to fetch search resutls. Replaces SerpAPI"""
 
     api_base = "https://api.dataforseo.com/v3"
-    api_key = "Z3JlZ0BicmlkZ2UubWVkaWE6ZmQ0NmVmNjZjNDQxYTdmYw=="
+    api_key = "..." # Put your own
 
     def confirm_response(self, resp):
         try:
@@ -267,7 +267,7 @@ class OpenCageAPI(API):
     """Uses the generous free queries provided by opencageapi.com for translating locations.
        Translate a named location to a latitude and longitude."""
 
-    api_key = "dd0a15325d6a4798add4109113d5214a"
+    api_key = "..." # Put your own
     api_base = "https://api.opencagedata.com/geocode/v1/json"
 
     @staticmethod
